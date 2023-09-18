@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            .alive {
+                background-color: #000000;
+            }
+    
+            .dead {
+                background-color: #b4b4b4;
+            }
+    
+            .highlight {
+                position: relative;
+            }
+    
+            .highlight {
+                box-shadow: 0px 0px 0px 2px rgba(0, 255, 119, 0.7) inset;
+            }
+            
+            td {
+                width: 1vh;
+                height: 0;
+                padding-bottom: 1vh;
+                box-sizing: border-box;
+                border: 0.1vh solid white;
+            }
+
+            #patternInput {
+                height: 100px;
+            }
+
+            button {
+                min-width: 48px;
+                min-height: 48px;
+            }
+
+            .glider {
+                background-color: #ff0000;
+            }
+
+            .spaceship {
+                background-color: #0000ff;
+            }
+
+            @media screen and (max-width: 600px) {
+                td {
+                    width: 8px;
+                    height: 8px;
+                }
+            }
+        </style>
+    </head>
+<body>
+    <table id="grid"></table>
+    <button id="stepButton">Step</button>
+    <button id="playButton">Play</button>
+    <button id="pauseButton">Pause</button>
+    <button id="randomButton">Randomize</button>
+    <button id="paintButton">Paint</button>
+    <button id="eraseButton">Erase</button>
+    <button id="saveBoardButton">Save Board State</button>
+    <button id="loadBoardButton">Load Board State</button>
+    <button id="highlightButton">Highlight Mode</button>
+    <button id="copyButton">Copy to Clipboard</button>
+    <button id="rotateButton">Rotate Selection 90°</button>
+    <button id="clearButton">Clear</button>
+    <input id="speedSlider" type="range" min="1" max="100" value="50">
+    <select id="patternSelect">
+        <option value="">--Select Pattern--</option>
+        <option value="glider">Glider</option>
+        <option value="spaceship">Spaceship</option>
+        <option value="custom">Enter Custom Pattern</option>
+    </select>    
+    <input id="ruleInput" type="text" placeholder="Enter custom rule">
+    <button id="submitRuleButton">Submit Rule</button>
+    <textarea id="patternInput" placeholder="Enter pattern"></textarea>
+    <button id="submitPatternButton">Submit Pattern</button>
+    <button id="savePatternButton">Save Pattern</button>
+    <div id="generationCounter">Generation: 0</div>
+</body>
+</html>
+<script>
+// New global variables
+var presets = {
+    glider: [[false, true, false], [false, false, true], [true, true, true]],
+    spaceship: [
+        [false, false, true, true, false],
+        [true, true, false, false, true],
+        [true, false, false, false, true],
+        [true, false, false, true, true],
+        [false, false, false, true, false]
+    ]
+    // Add more preset patterns here
+};
+var speedSlider = document.getElementById('speedSlider');
+var presetSelector = document.getElementById('presetPatterns');
+var patternSelect = document.getElementById('patternSelect');
+var patternInput = document.getElementById('patternInput');
+var ruleInput = document.getElementById('ruleInput');
+var savePatternButton = document.getElementById('savePatternButton');
+var saveBoardButton = document.getElementById('saveBoardButton');
+var loadBoardButton = document.getElementById('loadBoardButton');
+var generationCounter = document.getElementById('generationCounter');
+var customRule = null;
+var generation = 0;
+var gameHistory = [];
+var maxHistory = 100;  // Maximum number of steps to remember for undoing
+var zoomLevel = 1;
+var panX = 0;
+var panY = 0;
+// Initialize global variables
+var isPortrait = window.innerHeight > window.innerWidth;
+var cellSize = 1; // Represents 1% of the viewport width or height
+var width, height;
+
+if (isPortrait) {
+    // Portrait mode: limit the height of the grid to the viewport width
+    height = Math.floor(100 / cellSize);
+    width = Math.floor((window.innerWidth / window.innerHeight) * height);
+} else {
+    // Landscape mode: fill the viewport width with cells
+    width = Math.floor(100 / cellSize);
+    height = Math.floor((window.innerHeight / window.innerWidth) * width);
+}
+var speed = 25;
+var playing = false;
+var painting = false;
+var erasing = false;
+var pasting = false;
+var highlighting = false;
+var mouseDown = false;
+var board = [];
+var pattern = [];
+var timerId;
+var startX, startY, endX, endY;
+var customRule = function(alive, neighbors) {
+    return alive ? neighbors === 2 || neighbors === 3 : neighbors === 3;
+};
+
+// Initialize the board
+function initialize() {
+    for (var i = 0; i < height; i++) {
+        board[i] = [];
+    }
+}
+
+initialize();
+
+
+// Randomize the board
+function randomize() {
+    for (var i = 0; i < height; i++) {
+        for (var j = 0; j < width; j++) {
+            board[i][j] = Math.random() < 0.1;
+        }
+    }
+}
+
+// Construct the grid and add event listeners to the cells
+var grid = document.getElementById('grid');
+for (var i = 0; i < height; i++) {
+    var row = document.createElement('tr');
+    for (var j = 0; j < width; j++) {
+        var cell = document.createElement('td');
+        cell.className = board[i][j] ? 'alive' : 'dead';
+
+        cell.addEventListener('mousedown', handleMouseDown(i, j));
+        cell.addEventListener('mousemove', handleMouseMove(i, j));
+        cell.addEventListener('touchstart', handleMouseDown(i, j));
+        cell.addEventListener('touchmove', handleMouseMove(i, j));
+
+        row.appendChild(cell);
+    }
+    grid.appendChild(row);
+}
+
+
+// New function for zooming and panning
+function transformCoordinates(x, y) {
+    return [(x - panX) / zoomLevel, (y - panY) / zoomLevel];
+}
+
+// Modified to use requestAnimationFrame
+function play() {
+    if (!playing) {
+        playing = true;
+        timerId = requestAnimationFrame(function frame() {
+            update();
+            redraw();
+            timerId = requestAnimationFrame(frame);
+        });
+    }
+}
+
+// New function for resizing the grid
+function resizeGrid(newWidth, newHeight) {
+    var newBoard = [];
+    for (var i = 0; i < newHeight; i++) {
+        newBoard[i] = [];
+        for (var j = 0; j < newWidth; j++) {
+            newBoard[i][j] = (i < height && j < width) ? board[i][j] : false;
+        }
+    }
+    width = newWidth;
+    height = newHeight;
+    board = newBoard;
+}
+
+function getNeighbors(i, j) {
+    return [
+        [i - 1, j - 1], [i - 1, j], [i - 1, j + 1],
+        [i, j - 1],               [i, j + 1],
+        [i + 1, j - 1], [i + 1, j], [i + 1, j + 1]
+    ].map(function(n) {
+        return [(n[0] + height) % height, (n[1] + width) % width];
+    });
+}
+
+
+// Modified to use custom rules
+function update() {
+    var newBoard = JSON.parse(JSON.stringify(board));
+    for (var i = 0; i < height; i++) {
+        for (var j = 0; j < width; j++) {
+            var aliveNeighbors = getNeighbors(i, j).filter(function(n) {
+                return board[n[0]][n[1]];
+            }).length;
+            newBoard[i][j] = (customRule) ? customRule(board[i][j], aliveNeighbors) : (aliveNeighbors === 3 || (aliveNeighbors === 2 && board[i][j]));
+        }
+    }
+    gameHistory.push(board);
+    if (gameHistory.length > maxHistory) gameHistory.shift();
+    generation++;
+    board = newBoard;
+}
+
+
+// Modified for different cell states
+function redraw() {
+    for (var i = 0; i < height; i++) {
+        for (var j = 0; j < width; j++) {
+            var cell = grid.children[i].children[j];
+            cell.className = board[i][j] ? 'alive' : 'dead';
+            if (cell.className == 'alive') {
+                if (JSON.stringify(board[i][j]) == JSON.stringify(presets.glider)) {
+                    cell.className = 'glider';
+                } else if (JSON.stringify(board[i][j]) == JSON.stringify(presets.spaceship)) {
+                    cell.className = 'spaceship';
+                }
+            }
+            if (highlighting && i >= Math.min(startX, endX) && i <= Math.max(startX, endX) && j >= Math.min(startY, endY) && j <= Math.max(startY, endY)) {
+                cell.className += ' highlight';
+            }
+        }
+    }
+    generationCounter.textContent = 'Generation: ' + generation;
+}
+
+// Clear button handlers
+document.getElementById('clearButton').onclick = function() {
+    for (var i = 0; i < height; i++) {
+        for (var j = 0; j < width; j++) {
+            board[i][j] = false;
+        }
+    }
+    redraw();
+};
+
+
+// Custom rule button handler
+ruleInput.onchange = function() {
+    var ruleString = ruleInput.value;
+    var birthCounts = ruleString.split('/')[0].split('').map(Number);
+    var surviveCounts = ruleString.split('/')[1].split('').map(Number);
+    customRule = function(alive, neighbors) {
+        return alive ? surviveCounts.includes(neighbors) : birthCounts.includes(neighbors);
+    };
+};
+
+// Save Pattern button handler
+document.getElementById('savePatternButton').onclick = function() {
+    var patternName = prompt('Enter a name for the pattern');
+    if (patternName) {
+        var input = document.getElementById('patternInput').value;
+        var newPattern = input.split('\n').map(function(line) {
+            return Array.from(line).map(function(char) {
+                return char === 'O';
+            });
+        });
+        presets[patternName] = newPattern;
+        var option = document.createElement('option');
+        option.value = patternName;
+        option.text = patternName;
+        patternSelect.add(option);
+    }
+};
+
+
+patternSelect.addEventListener('change', function() {
+    if (patternSelect.value === 'custom') {
+        patternInput.disabled = false;
+    } else {
+        patternInput.disabled = true;
+        pattern = presets[patternSelect.value];
+    }
+});
+
+saveBoardButton.onclick = function() {
+var stateName = prompt('Enter a name for the board state');
+if (stateName) {
+    localStorage.setItem(stateName, JSON.stringify(board));
+}
+};
+
+loadBoardButton.onclick = function() {
+    var stateName = prompt('Enter the name of the board state to load');
+    if (stateName) {
+        var savedState = JSON.parse(localStorage.getItem(stateName));
+        if (savedState) {
+            board = savedState;
+            redraw();
+        } else {
+            alert('No board state found with that name');
+        }
+    }
+};
+document.addEventListener('keydown', function(e) {
+    switch (e.key) {
+        case ' ':  // Space bar
+            if (playing) {
+                pause();
+            } else {
+                play();
+            }
+            break;
+        case 'ArrowRight':
+            step();
+            break;
+        case 'ArrowLeft':
+            if (gameHistory.length > 0) {
+                board = gameHistory.pop();
+                generation--;
+                redraw();
+            }
+            break;
+        case 'r':
+            randomize();
+            redraw();
+            break;
+        case 'c':
+            clear();
+            break;
+        case '+':
+            zoomLevel *= 1.1;
+            redraw();
+            break;
+        case '-':
+            zoomLevel /= 1.1;
+            redraw();
+            break;
+        case 'ArrowUp':
+            panY -= 10;
+            redraw();
+            break;
+        case 'ArrowDown':
+            panY += 10;
+            redraw();
+            break;
+    }
+});
+
+
+
+// Handle mouse down event
+function handleMouseDown(i, j) {
+    return function() {
+        mouseDown = true;
+        if (highlighting) {
+            startX = i;
+            startY = j;
+        } else if (painting) {
+            board[i][j] = true;
+        } else if (erasing) {
+            board[i][j] = false;
+        } else if (pasting) {
+            for (var pi = 0; pi < pattern.length; pi++) {
+                for (var pj = 0; pj < pattern[pi].length; pj++) {
+                    var ni = (i + pi + height) % height;
+                    var nj = (j + pj + width) % width;
+                    board[ni][nj] = pattern[pi][pj];
+                }
+            }
+        }
+        redraw();
+    }
+}
+
+// Handle mouse move event
+function handleMouseMove(i, j) {
+    return function(e) {
+        if (e.buttons != 1 && !e.touches) return;
+        if (painting) {
+            board[i][j] = true;
+            redraw();
+        } else if (erasing) {
+            board[i][j] = false;
+            redraw();
+        } else if (mouseDown && highlighting) {
+            var diffX = i - startX;
+            var diffY = j - startY;
+            if (Math.abs(diffX) > Math.abs(diffY)) {
+                endX = startX + Math.sign(diffX) * Math.abs(diffX);
+                endY = startY + Math.sign(diffX) * Math.abs(diffX);
+            } else {
+                endX = startX + Math.sign(diffY) * Math.abs(diffY);
+                endY = startY + Math.sign(diffY) * Math.abs(diffY);
+            }
+            endX = Math.max(0, Math.min(endX, height - 1));
+            endY = Math.max(0, Math.min(endY, width - 1));
+            redraw();
+        }
+    }
+}
+
+// Step button handler
+document.getElementById('stepButton').onclick = function() {
+    update();
+    redraw();
+};
+
+// Play button handler
+document.getElementById('playButton').onclick = function() {
+    if (!playing) {
+        playing = true;
+        timerId = setInterval(function() {
+            update();
+            redraw();
+        }, 1000 / speed);  // speed is defined as frames per second
+    }
+};
+
+// Pause button handler
+document.getElementById('pauseButton').onclick = function() {
+    if (playing) {
+        playing = false;
+        clearInterval(timerId);
+    }
+};
+
+// Randomize button handler
+document.getElementById('randomButton').onclick = function() {
+    randomize();
+    redraw();
+};
+
+// Speed slider handler
+speedSlider.oninput = function() {
+    speed = speedSlider.value;
+    if (playing) {
+        clearInterval(timerId);
+        timerId = setInterval(function() {
+            update();
+            redraw();
+        }, 1000 / speed);
+    }
+};
+
+// Paint button handler
+document.getElementById('paintButton').onclick = function() {
+    if (highlighting) {
+        for (var i = Math.min(startX, endX); i <= Math.max(startX, endX); i++) {
+            for (var j = Math.min(startY, endY); j <= Math.max(startY, endY); j++) {
+                board[i][j] = true;
+            }
+        }
+        highlighting = false;
+        redraw();
+    }
+    painting = true;
+    erasing = false;
+};
+
+// Erase button handler
+document.getElementById('eraseButton').onclick = function() {
+    if (highlighting) {
+        for (var i = Math.min(startX, endX); i <= Math.max(startX, endX); i++) {
+            for (var j = Math.min(startY, endY); j <= Math.max(startY, endY); j++) {
+                board[i][j] = false;
+            }
+        }
+        highlighting = false;
+        redraw();
+    }
+    painting = false;
+    erasing = true;
+};
+
+// Highlight button handler
+document.getElementById('highlightButton').onclick = function() {
+    painting = false;
+    erasing = false;
+    highlighting = true;
+};
+
+
+// Rotate button handler
+document.getElementById('rotateButton').onclick = function() {
+    if (Math.abs(startX - endX) !== Math.abs(startY - endY)) {
+        alert('Only square selections can be rotated.');
+    } else {
+        var sX = Math.min(startX, endX);
+        var eX = Math.max(startX, endX);
+        var sY = Math.min(startY, endY);
+        var eY = Math.max(startY, endY);
+
+        var side = eX - sX + 1;
+
+        var rotated = Array(side).fill().map(() => Array(side).fill(false));
+
+        for (var i = sX; i <= eX; i++) {
+            for (var j = sY; j <= eY; j++) {
+                rotated[j - sY][eX - i] = board[i][j];
+            }
+        }
+
+        for (var i = 0; i < side; i++) {
+            for (var j = 0; j < side; j++) {
+                board[sX + i][sY + j] = rotated[i][j];
+            }
+        }
+
+        redraw();
+    }
+};
+
+
+// Submit Pattern button handler
+document.getElementById('submitPatternButton').onclick = function() {
+    var input = document.getElementById('patternInput').value;
+    pattern = input.split('\n').map(function(line) {
+        return Array.from(line).map(function(char) {
+            return char === 'O';
+        });
+    });
+    painting = false;
+    erasing = false;
+    highlighting = false;
+    pasting = true;  // Activate pasting mode
+};
+
+
+// Pattern select handler
+patternSelect.addEventListener('change', function() {
+    if (patternSelect.value === 'custom') {
+        patternInput.disabled = false;
+    } else {
+        patternInput.disabled = true;
+        pattern = presets[patternSelect.value];
+    }
+});
+
+// Copy to Clipboard button handler
+document.getElementById('copyButton').onclick = function() {
+    var pattern = [];
+    for (var i = Math.min(startX, endX); i <= Math.max(startX, endX); i++) {
+        var row = [];
+        for (var j = Math.min(startY, endY); j <= Math.max(startY, endY); j++) {
+            row.push(board[i][j] ? 'O' : '.');
+        }
+        pattern.push(row.join(''));
+    }
+    navigator.clipboard.writeText(pattern.join('\n'));
+};
+
+</script>
